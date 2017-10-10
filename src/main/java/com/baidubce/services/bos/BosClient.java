@@ -12,6 +12,33 @@
  */
 package com.baidubce.services.bos;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.StringWriter;
+import java.io.UnsupportedEncodingException;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+
+import org.apache.commons.codec.binary.Base64;
+import org.apache.commons.codec.binary.Hex;
+import org.apache.commons.io.IOUtils;
+import org.apache.http.HttpStatus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.baidubce.AbstractBceClient;
 import com.baidubce.BceClientException;
 import com.baidubce.BceServiceException;
@@ -26,32 +53,72 @@ import com.baidubce.http.handler.BceErrorResponseHandler;
 import com.baidubce.http.handler.BceJsonResponseHandler;
 import com.baidubce.http.handler.BceMetadataResponseHandler;
 import com.baidubce.http.handler.HttpResponseHandler;
-import com.baidubce.internal.*;
+import com.baidubce.internal.InternalRequest;
+import com.baidubce.internal.RestartableFileInputStream;
+import com.baidubce.internal.RestartableInputStream;
+import com.baidubce.internal.RestartableMultiByteArrayInputStream;
+import com.baidubce.internal.RestartableNonResettableInputStream;
+import com.baidubce.internal.RestartableResettableInputStream;
 import com.baidubce.model.AbstractBceRequest;
 import com.baidubce.model.User;
-import com.baidubce.services.bos.model.*;
-import com.baidubce.util.*;
+import com.baidubce.services.bos.model.AbortMultipartUploadRequest;
+import com.baidubce.services.bos.model.AppendObjectRequest;
+import com.baidubce.services.bos.model.AppendObjectResponse;
+import com.baidubce.services.bos.model.BosObject;
+import com.baidubce.services.bos.model.BosObjectSummary;
+import com.baidubce.services.bos.model.BosResponse;
+import com.baidubce.services.bos.model.CannedAccessControlList;
+import com.baidubce.services.bos.model.CompleteMultipartUploadRequest;
+import com.baidubce.services.bos.model.CompleteMultipartUploadResponse;
+import com.baidubce.services.bos.model.CopyObjectRequest;
+import com.baidubce.services.bos.model.CopyObjectResponse;
+import com.baidubce.services.bos.model.CopyObjectResponseWithExceptionInfo;
+import com.baidubce.services.bos.model.CreateBucketRequest;
+import com.baidubce.services.bos.model.CreateBucketResponse;
+import com.baidubce.services.bos.model.DeleteBucketRequest;
+import com.baidubce.services.bos.model.DeleteObjectRequest;
+import com.baidubce.services.bos.model.DoesBucketExistRequest;
+import com.baidubce.services.bos.model.GeneratePresignedUrlRequest;
+import com.baidubce.services.bos.model.GenericBucketRequest;
+import com.baidubce.services.bos.model.GenericObjectRequest;
+import com.baidubce.services.bos.model.GetBosAccountOwnerRequest;
+import com.baidubce.services.bos.model.GetBucketAclRequest;
+import com.baidubce.services.bos.model.GetBucketAclResponse;
+import com.baidubce.services.bos.model.GetBucketLocationRequest;
+import com.baidubce.services.bos.model.GetBucketLocationResponse;
+import com.baidubce.services.bos.model.GetObjectMetadataRequest;
+import com.baidubce.services.bos.model.GetObjectRequest;
+import com.baidubce.services.bos.model.GetObjectResponse;
+import com.baidubce.services.bos.model.Grant;
+import com.baidubce.services.bos.model.Grantee;
+import com.baidubce.services.bos.model.InitiateMultipartUploadRequest;
+import com.baidubce.services.bos.model.InitiateMultipartUploadResponse;
+import com.baidubce.services.bos.model.ListBucketsRequest;
+import com.baidubce.services.bos.model.ListBucketsResponse;
+import com.baidubce.services.bos.model.ListMultipartUploadsRequest;
+import com.baidubce.services.bos.model.ListMultipartUploadsResponse;
+import com.baidubce.services.bos.model.ListObjectsRequest;
+import com.baidubce.services.bos.model.ListObjectsResponse;
+import com.baidubce.services.bos.model.ListPartsRequest;
+import com.baidubce.services.bos.model.ListPartsResponse;
+import com.baidubce.services.bos.model.ObjectMetadata;
+import com.baidubce.services.bos.model.PartETag;
+import com.baidubce.services.bos.model.Permission;
+import com.baidubce.services.bos.model.ProcessObjectRequest;
+import com.baidubce.services.bos.model.ProcessObjectResponse;
+import com.baidubce.services.bos.model.PutObjectRequest;
+import com.baidubce.services.bos.model.PutObjectResponse;
+import com.baidubce.services.bos.model.ResponseHeaderOverrides;
+import com.baidubce.services.bos.model.SetBucketAclRequest;
+import com.baidubce.services.bos.model.UploadPartRequest;
+import com.baidubce.services.bos.model.UploadPartResponse;
+import com.baidubce.util.HashUtils;
 import com.baidubce.util.HttpUtils;
+import com.baidubce.util.JsonUtils;
+import com.baidubce.util.MD5DigestCalculatingInputStream;
+import com.baidubce.util.Mimetypes;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.google.common.collect.Lists;
-
-import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.codec.binary.Hex;
-import org.apache.commons.io.IOUtils;
-import org.apache.http.HttpStatus;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.io.*;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.security.NoSuchAlgorithmException;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-
-import static com.google.common.base.Preconditions.checkNotNull;
 
 /**
  * Provides the client for accessing the Baidu Object Service.
@@ -777,6 +844,10 @@ public class BosClient extends AbstractBceClient {
                 .getObject().getObjectMetadata();
     }
 
+    public ProcessObjectResponse ProcessObject(String bucketName, String key, String parameter) {
+        return this.processObject(new ProcessObjectRequest(bucketName, key, parameter));
+    }
+
     /**
      * Uploads the specified file to Bos under the specified bucket and key name.
      *
@@ -910,6 +981,30 @@ public class BosClient extends AbstractBceClient {
         PutObjectResponse result = new PutObjectResponse();
         result.setETag(response.getMetadata().getETag());
 
+        return result;
+    }
+
+    public ProcessObjectResponse processObject(ProcessObjectRequest request) {
+        checkNotNull(request, "request should not be null.");
+        assertStringNotNullOrEmpty(request.getKey(), "object key should not be null or empty");
+
+        InternalRequest internalRequest = this.createRequest(request, HttpMethodName.POST);
+
+        internalRequest.setContent(RestartableInputStream.wrap(request.getParameter().getBytes()));
+        internalRequest.addParameter("process", "");
+
+        internalRequest.addHeader(Headers.CONTENT_LENGTH, String.valueOf(request.getParameter().length()));
+
+        ProcessObjectResponse result = new ProcessObjectResponse();
+        try {
+            result = this.invokeHttpClient(internalRequest, ProcessObjectResponse.class);
+        } finally {
+            try {
+                internalRequest.getContent().close();
+            } catch (Exception e) {
+                logger.warn("Fail to close input stream", e);
+            }
+        }
         return result;
     }
 
